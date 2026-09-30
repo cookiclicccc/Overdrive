@@ -1,0 +1,287 @@
+ html<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Retro 2.5D Raycaster Engine</title>
+  <style>
+    body {
+      margin: 0;
+      background-color: #020617;
+      color: #f8fafc;
+      font-family: 'Segoe UI', monospace, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      overflow: hidden;
+      user-select: none;
+    }
+    #game-viewport {
+      border: 4px solid #38bdf8;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.8);
+      background: #000;
+    }
+    .hud {
+      margin-top: 15px;
+      display: flex;
+      gap: 30px;
+      font-size: 18px;
+      font-weight: bold;
+      color: #38bdf8;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .controls-hint {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #64748b;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+  <canvas id="game-viewport" width="640" height="400"></canvas>
+  
+  <div class="hud">
+    <div>Health: <span style="color: #ef4444;">100%</span></div>
+    <div>Ammo: <span style="color: #eab308;">99</span></div>
+    <div>Weapon: <span style="color: #f8fafc;">Pistol</span></div>
+  </div>
+
+  <div class="controls-hint">
+    Movement: <b>W, S</b> | Turning: <b>A, D</b>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("game-viewport");
+    const ctx = canvas.getContext("2d");
+
+    // --- GAME MAP CONFIGURATION ---
+    // 1 = Blue Wall, 2 = Green Wall, 3 = Red Wall, 0 = Empty Space
+    const MAP_WIDTH = 16;
+    const MAP_HEIGHT = 16;
+    const MAP = [,
+ ,
+ ,
+ ,
+ ,
+ ,
+ ,
+ ,
+ ,
+ ,
+ ,
+ ,
+ ,
+ ,
+ ,
+      [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+    ];
+
+    // --- PLAYER STATE ---
+    let playerX = 3.5;       // X position on the grid matrix
+    let playerY = 3.5;       // Y position on the grid matrix
+    let playerAngle = 0.0;   // Facing direction angle in radians
+    const FOV = Math.PI / 3; // 60 degree field of vision profile
+
+    // --- CONTROLS SETUP ---
+    const keys = { w: false, a: false, s: false, d: false };
+    document.addEventListener("keydown", (e) => { keys[e.key.toLowerCase()] = true; });
+    document.addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
+
+    // --- ENGINE CORE MATHEMATICS ---
+    function updatePhysics(delta) {
+      const moveSpeed = 3.5 * delta;  // Grid units per second
+      const rotSpeed = 3.0 * delta;   // Radians per second
+
+      // 1. Calculate Rotation
+      if (keys.a) playerAngle -= rotSpeed;
+      if (keys.d) playerAngle += rotSpeed;
+
+      // Keep tracking angle clean between 0 and 2*PI boundary limits
+      playerAngle = (playerAngle + Math.PI * 2) % (Math.PI * 2);
+
+      // 2. Forward/Backward Movement Vectors
+      let moveX = 0;
+      let moveY = 0;
+      if (keys.w) {
+        moveX += Math.cos(playerAngle) * moveSpeed;
+        moveY += Math.sin(playerAngle) * moveSpeed;
+      }
+      if (keys.s) {
+        moveX -= Math.cos(playerAngle) * moveSpeed;
+        moveY -= Math.sin(playerAngle) * moveSpeed;
+      }
+
+      // 3. Sliding Grid Wall Collision Detection Check
+      // Checks independent axes to allow players to cleanly slide along adjacent wall structures
+      if (MAP[Math.floor(playerY)][Math.floor(playerX + moveX)] === 0) playerX += moveX;
+      if (MAP[Math.floor(playerY + moveY)][Math.floor(playerX)] === 0) playerY += moveY;
+    }
+
+    function renderRaycaster() {
+      const screenWidth = canvas.width;
+      const screenHeight = canvas.height;
+
+      // Draw background layout fields (Ceiling half and Floor half)
+      ctx.fillStyle = "#0f172a"; // Dark blue ceiling
+      ctx.fillRect(0, 0, screenWidth, screenHeight / 2);
+      ctx.fillStyle = "#1e293b"; // Lighter floor deck slate
+      ctx.fillRect(0, screenHeight / 2, screenWidth, screenHeight / 2);
+
+      // --- CAST RAYS ACROSS SCREEN COLUMNS ---
+      for (let x = 0; x < screenWidth; x++) {
+        // Compute exact camera angle slice position relative to absolute viewpoint vector orientation
+        const rayAngle = (playerAngle - FOV / 2) + (x / screenWidth) * FOV;
+
+        let distanceToWall = 0;
+        let hitWall = false;
+        let wallType = 0;
+        let isVerticalSide = false; // Tracks side axis intercept data for artificial lighting shadows
+
+        const eyeX = Math.cos(rayAngle);
+        const eyeY = Math.sin(rayAngle);
+
+        // Digital Differential Analysis (DDA) fast array ray stepping loop
+        let mapCheckX = Math.floor(playerX);
+        let mapCheckY = Math.floor(playerY);
+
+        // Absolute scaling vectors representing how long the ray step travels to cross exactly 1 grid line boundary
+        const deltaDistX = Math.abs(1 / eyeX);
+        const deltaDistY = Math.abs(1 / eyeY);
+
+        let stepX, stepY;
+        let sideDistX, sideDistY;
+
+        if (eyeX < 0) {
+          stepX = -1;
+          sideDistX = (playerX - mapCheckX) * deltaDistX;
+        } else {
+          stepX = 1;
+          sideDistX = (mapCheckX + 1.0 - playerX) * deltaDistX;
+        }
+
+        if (eyeY < 0) {
+          stepY = -1;
+          sideDistY = (playerY - mapCheckY) * deltaDistY;
+        } else {
+          stepY = 1;
+          sideDistY = (mapCheckY + 1.0 - playerY) * deltaDistY;
+        }
+
+        // Cycle steps until ray intercepts a non-zero integer wall item cell bounds
+        const maxSearchDepth = 32;
+        let searchTicks = 0;
+
+        while (!hitWall && searchTicks < maxSearchDepth) {
+          if (sideDistX < sideDistY) {
+            sideDistX += deltaDistX;
+            mapCheckX += stepX;
+            isVerticalSide = false;
+          } else {
+            sideDistY += deltaDistY;
+            mapCheckY += stepY;
+            isVerticalSide = true;
+          }
+
+          searchTicks++;
+
+          // Out of bounds emergency escape check
+          if (mapCheckX < 0 || mapCheckX >= MAP_WIDTH || mapCheckY < 0 || mapCheckY >= MAP_HEIGHT) {
+            break;
+          }
+
+          if (MAP[mapCheckY][mapCheckX] > 0) {
+            hitWall = true;
+            wallType = MAP[mapCheckY][mapCheckX];
+          }
+        }
+
+        // Correct for fish-eye distortion effects by calculating true perpendicular distance
+        if (!isVerticalSide) distanceToWall = (sideDistX - deltaDistX);
+        else                 distanceToWall = (sideDistY - deltaDistY);
+
+        // Fish-eye lens filter multiplier
+        distanceToWall = distanceToWall * Math.cos(rayAngle - playerAngle);
+
+        // Prevent division tracking exceptions if right on top of object boundary lines
+        if (distanceToWall < 0.1) distanceToWall = 0.1;
+
+        // --- CALCULATE RENDERING GEOMETRY HEIGHTS ---
+        const wallColumnHeight = Math.min(screenHeight, Math.floor(screenHeight / distanceToWall));
+
+        // Generate base asset color arrays palette mapping indexes
+        let r = 0, g = 0, b = 0;
+        if (wallType === 1) { r = 14; g = 165; b = 233; }      // Sky Blue Wall
+        else if (wallType === 2) { r = 34; g = 197; b = 94; }  // Green Wall
+        else if (wallType === 3) { r = 239; g = 68; b = 68; }  // Red Wall
+
+        // Classic Raycasting FX: artificially shade vertical walls darker to generate fake 3D shadows
+        if (isVerticalSide) {
+          r *= 0.65; g *= 0.65; b *= 0.65;
+        }
+
+        // Distance Fog/Depth Shading: Fade walls darker the further away they are from view
+        const fogIndex = Math.max(0, Math.min(1, 1 - (distanceToWall / 12)));
+        r *= fogIndex; g *= fogIndex; b *= fogIndex;
+
+        // Draw the vertical screen pixel line row strip column
+        ctx.fillStyle = `rgb(${Math.floor(r)}, ${Math.floor(g)}, ${Math.floor(b)})`;
+        ctx.fillRect(x, (screenHeight / 2) - (wallColumnHeight / 2), 1, wallColumnHeight);
+      }
+    }
+
+    function drawMiniMap() {
+      const cellSize = 6;
+      ctx.fillStyle = "rgba(15, 23, 42, 0.8)";
+      ctx.fillRect(10, 10, MAP_WIDTH * cellSize, MAP_HEIGHT * cellSize);
+
+      // Draw map wall grid cells
+      for (let y = 0; y < MAP_HEIGHT; y++) {
+        for (let x = 0; x < MAP_WIDTH; x++) {
+          if (MAP[y][x] > 0) {
+            ctx.fillStyle = "#475569";
+            ctx.fillRect(10 + x * cellSize, 10 + y * cellSize, cellSize - 1, cellSize - 1);
+          }
+        }
+      }
+
+      // Draw Player spot and directional alignment sight lines vector indicators
+      const pX = 10 + playerX * cellSize;
+      const pY = 10 + playerY * cellSize;
+
+      ctx.fillStyle = "#ef4444";
+      ctx.beginPath();
+      ctx.arc(pX, pY, 3, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = "#38bdf8";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(pX, pY);
+      ctx.lineTo(pX + Math.cos(playerAngle) * 10, pY + Math.sin(playerAngle) * 10);
+      ctx.stroke();
+    }
+
+    // --- MAIN ENGINE TICK MANAGEMENT LOOPS ---
+    let lastTime = performance.now();
+
+    function engineTick(currentTime) {
+      requestAnimationFrame(engineTick);
+
+      const delta = (currentTime - lastTime) / 1000;
+      lastTime = currentTime;
+
+      updatePhysics(delta);
+      renderRaycaster();
+      drawMiniMap();
+    }
+
+    // Ignition frame initialization trigger loop step sequence setup
+    requestAnimationFrame(engineTick);
+  </script>
+</body>
+</html>
